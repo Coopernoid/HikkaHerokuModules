@@ -1,159 +1,148 @@
+import logging
 import os
-import io
-import re
+import textwrap
 import requests
 from PIL import Image, ImageDraw, ImageFont
 from .. import loader, utils
 
+logger = logging.getLogger(__name__)
 
 @loader.tds
 class SkalanizatorMod(loader.Module):
-    """Добавляет текст на картинки"""
+    """Скаланизатор — добавляет текст на картинки"""
 
-    strings = {
-        "name": "Скаланизатор",
-        "help": (
-            "🪐 Module Скаланизатор loaded ( ･ω･)ﾉ\n"
-            "ℹ️ Скаланизатор v1.1 — добавляет текст на картинки\n\n"
+    strings = {"name": "Скаланизатор"}
+
+    def __init__(self):
+        self.config = loader.ModuleConfig(
+            "FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "Путь до шрифта"
+        )
+        self.images = []
+
+    async def client_ready(self, client, db):
+        # Ничего не пишем в чат при загрузке
+        pass
+
+    async def jhelpcmd(self, message):
+        """Показать меню Скаланизатора"""
+        text = (
+            "🪐 Скаланизатор v1.1 (✿◠‿◠)\n"
             "▫️ .j [номер (опц.)] [текст/реплай] — создать мем\n"
             "▫️ .jadd <ссылка> — добавить картинку\n"
             "▫️ .jclear — очистить список картинок\n"
             "▫️ .jdel <номер/диапазон> — удалить картинку\n"
-            "▫️ .jlist — список картинок"
-        ),
-    }
-
-    def __init__(self):
-        self.config_path = "skalanizator_list.txt"
-        self._ensure_file()
-
-    def _ensure_file(self):
-        if not os.path.exists(self.config_path):
-            with open(self.config_path, "w") as f:
-                f.write("")
-
-    def _load_list(self):
-        with open(self.config_path, "r") as f:
-            return [line.strip() for line in f if line.strip()]
-
-    def _save_list(self, items):
-        with open(self.config_path, "w") as f:
-            f.write("\n".join(items))
-
-    async def jhelpcmd(self, message):
-        """Показать помощь"""
-        await utils.answer(message, self.strings["help"])
-
-    async def jlistcmd(self, message):
-        """Список картинок"""
-        items = self._load_list()
-        if not items:
-            return await utils.answer(message, "📂 Список пуст")
-        out = "📂 Список картинок:\n\n" + "\n".join(
-            f"{i+1}. {url}" for i, url in enumerate(items)
+            "▫️ .jlist — список картинок\n"
         )
-        await utils.answer(message, out)
+        await utils.answer(message, text)
 
-    async def jaddcmd(self, message):
-        """Добавить картинку"""
-        args = utils.get_args_raw(message)
-        if not args:
-            return await utils.answer(message, "⚠️ Укажи ссылку")
-        items = self._load_list()
-        items.append(args)
-        self._save_list(items)
-        await utils.answer(message, f"✅ Добавлено (#{len(items)})")
+    def _add_text(self, img_path, text):
+        img = Image.open(img_path).convert("RGB")
+        draw = ImageDraw.Draw(img)
 
-    async def jclearcmd(self, message):
-        """Очистить список"""
-        self._save_list([])
-        await utils.answer(message, "🧹 Список очищен")
+        try:
+            font = ImageFont.truetype(self.config["FONT_PATH"], size=40)
+        except Exception:
+            font = ImageFont.load_default()
 
-    async def jdelcmd(self, message):
-        """Удалить картинку по номеру или диапазону"""
-        args = utils.get_args_raw(message)
-        if not args:
-            return await utils.answer(message, "⚠️ Укажи номер или диапазон")
+        # Разбивка длинного текста на строки
+        max_width = img.width - 40
+        lines = []
+        for line in text.split("\n"):
+            wrapped = textwrap.wrap(line, width=40)
+            lines.extend(wrapped if wrapped else [""])
 
-        items = self._load_list()
-        if "-" in args:
-            try:
-                start, end = map(int, args.split("-"))
-                start, end = start - 1, end
-                del items[start:end]
-                self._save_list(items)
-                return await utils.answer(message, f"🗑 Удалены картинки {args}")
-            except:
-                return await utils.answer(message, "⚠️ Неверный диапазон")
-        else:
-            try:
-                idx = int(args) - 1
-                removed = items.pop(idx)
-                self._save_list(items)
-                return await utils.answer(message, f"🗑 Удалена: {removed}")
-            except:
-                return await utils.answer(message, "⚠️ Неверный номер")
+        # Высота всего блока текста
+        line_height = font.getbbox("A")[3] - font.getbbox("A")[1] + 5
+        total_height = line_height * len(lines)
+
+        y = img.height - total_height - 20
+        for line in lines:
+            w = font.getlength(line)
+            x = (img.width - w) / 2
+            draw.text((x, y), line, font=font, fill="white", stroke_width=2, stroke_fill="black")
+            y += line_height
+
+        out_path = "/tmp/out.jpg"
+        img.save(out_path, "JPEG")
+        return out_path
 
     async def jcmd(self, message):
-        """Создать мем"""
+        """[номер (опц.)] [текст/реплай] — создать мем"""
         args = utils.get_args_raw(message).split(maxsplit=1)
-
-        items = self._load_list()
-        if not items:
-            return await utils.answer(message, "📂 Список пуст")
-
-        img_url = items[0]
-        text = ""
 
         if args and args[0].isdigit():
             idx = int(args[0]) - 1
-            if 0 <= idx < len(items):
-                img_url = items[idx]
-            if len(args) > 1:
-                text = args[1]
-        elif args:
-            text = " ".join(args)
+            text = args[1] if len(args) > 1 else ""
+        else:
+            idx = 0
+            text = args[0] if args else ""
 
-        if not text and message.is_reply:
-            reply = await message.get_reply_message()
+        reply = await message.get_reply_message()
+        if reply and not text:
             text = reply.raw_text or ""
 
-        if not text:
-            return await utils.answer(message, "⚠️ Нет текста")
+        if not self.images:
+            await utils.answer(message, "🚫 Список картинок пуст. Добавь их через .jadd <ссылка>")
+            return
+
+        if idx < 0 or idx >= len(self.images):
+            await utils.answer(message, "🚫 Неверный номер картинки")
+            return
+
+        img_path = self._download_image(self.images[idx])
+        out_path = self._add_text(img_path, text or "")
+        await message.respond(file=out_path, reply_to=reply.id if reply else None)
+        await message.delete()
+
+    async def jaddcmd(self, message):
+        """<ссылка> — добавить картинку"""
+        url = utils.get_args_raw(message)
+        if not url:
+            await utils.answer(message, "🚫 Укажи ссылку на картинку")
+            return
+        self.images.append(url)
+        await utils.answer(message, f"✅ Картинка добавлена под номером {len(self.images)}")
+
+    async def jlistcmd(self, message):
+        """Список картинок"""
+        if not self.images:
+            await utils.answer(message, "🚫 Список пуст")
+            return
+        out = "📂 Список картинок:\n\n"
+        for i, url in enumerate(self.images, start=1):
+            out += f"{i}. {url}\n"
+        await utils.answer(message, out)
+
+    async def jclearcmd(self, message):
+        """Очистить список картинок"""
+        self.images.clear()
+        await utils.answer(message, "🗑 Список картинок очищен")
+
+    async def jdelcmd(self, message):
+        """<номер/диапазон> — удалить картинку"""
+        args = utils.get_args_raw(message)
+        if not args:
+            await utils.answer(message, "🚫 Укажи номер или диапазон для удаления")
+            return
 
         try:
-            img_bytes = requests.get(img_url, timeout=10).content
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        except Exception as e:
-            return await utils.answer(message, f"🚫 Ошибка загрузки картинки: {e}")
+            if "-" in args:
+                start, end = map(int, args.split("-"))
+                del self.images[start - 1:end]
+                await utils.answer(message, f"🗑 Удалены картинки с {start} по {end}")
+            else:
+                idx = int(args) - 1
+                url = self.images.pop(idx)
+                await utils.answer(message, f"🗑 Картинка удалена: {url}")
+        except Exception:
+            await utils.answer(message, "🚫 Ошибка удаления. Проверь номер.")
 
-        img = self._add_text(img, text)
-        out = io.BytesIO()
-        out.name = "meme.jpg"
-        img.save(out, "JPEG")
-        out.seek(0)
-
-        await message.reply(file=out)
-
-    def _add_text(self, img, text):
-        draw = ImageDraw.Draw(img)
-        font_size = max(20, img.width // 18)
-        try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
-
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        x = (img.width - text_width) // 2
-        y = img.height - text_height - 10
-
-        outline = 3
-        for dx in range(-outline, outline + 1):
-            for dy in range(-outline, outline + 1):
-                if dx or dy:
-                    draw.text((x + dx, y + dy), text, font=font, fill="black")
-        draw.text((x, y), text, font=font, fill="white")
-
-        return img
+    def _download_image(self, url):
+        r = requests.get(url, stream=True)
+        if r.status_code != 200:
+            raise Exception("Ошибка загрузки картинки")
+        img_path = "/tmp/input.jpg"
+        with open(img_path, "wb") as f:
+            for chunk in r.iter_content(1024):
+                f.write(chunk)
+        return img_path
